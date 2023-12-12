@@ -1,0 +1,254 @@
+---
+title: 'Time Series HW #3'
+output: html_document
+Author: Andrew,Grant,Manisha,Sam,Tae
+date: "09-24-2023"
+---
+##Load libraries and data
+```{r}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+energy = read.csv("https://raw.githubusercontent.com/sjsimmo2/TimeSeries/master/AEP_hourly.csv", stringsAsFactors = TRUE)
+#energy = read.csv("AEP_hourly.csv", stringsAsFactors = TRUE)
+```
+
+# rollup data to monthly average
+## data split: train, valid, tesr
+```{r}
+energy_df = energy %>%
+  mutate(date = mdy_hm(datetime_beginning_ept),
+         date = floor_date(date, unit = "month")) %>%
+  group_by(date) %>%
+  summarise(mavg_mw = mean(mw)) %>%
+  arrange(date)
+
+energy_train = energy_df %>%
+  filter(date < ymd('2023-1-1'))
+
+energy_valid = energy_df %>%
+  filter(date >= ymd('2023-1-1'),
+         date <= ymd('2023-4-30'))
+
+energy_test = energy_df %>%
+  filter(date > ymd('2023-4-30'))
+```
+
+##STL decomposition
+```{r}
+mw = ts(energy_train$mavg_mw, start = 2016, frequency = 12)
+decomp_stl = stl(mw, s.window = 15)
+autoplot(decomp_stl)
+```
+## Seasonally adjusted data
+```{r}
+mw_a = mw - decomp_stl$time.series[,1]
+autoplot(mw)
+autoplot(mw_a)
+```
+## Dickey fuller test on seasonally adjusted data
+## Type 2: with drift and no trend , fail to reject null hypothesis(therfore, random walk with drift)
+```{r}
+aTSA::adf.test(mw_a)
+```
+
+##ACF and PACF plots on differences
+```{r}
+ggAcf(diff(mw_a, lag = 1)) # spike at lag 1
+ggPacf(diff(mw_a, lag = 1)) #spikes at lag 1,2
+```
+##Fitting ARIMA model ARIMA(2,1,0) and ACF PACF plots on residuals
+```{r}
+arima_2_1_0 = Arima(mw_a, order = c(2,1,0))
+ggAcf(arima_2_1_0$residuals)
+ggPacf(arima_2_1_0$residuals)
+```
+## LjungBox test ( ARIMA(2,1,0)) fail to reject null hypothesis ( no auto correlation)
+```{r}
+White.LB <- rep(NA, 10)
+
+for(i in 3:10){
+White.LB[i] <- Box.test(arima_2_1_0$residuals, 
+                        lag=i, type="Ljung-Box", 
+                        fitdf = 2)$p.value
+}
+
+plot(White.LB, type = "h")
+```
+## normality of residuals
+```{r}
+shapiro.test(arima_2_1_0$residuals)
+```
+
+##Fitting ARIMA model ARIMA(0,1,1) and ACF PACF plots on residuals
+```{r}
+arima_0_1_1 = Arima(mw_a, order = c(0,1,1))
+ggAcf(arima_0_1_1$residuals)
+ggPacf(arima_0_1_1$residuals)
+```
+
+## LjungBox test ( ARIMA(0,1,1)) fail to reject null hypothesis ( no auto correlation)
+```{r}
+White.LB <- rep(NA, 10)
+
+for(i in 2:10){
+White.LB[i] <- Box.test(arima_0_1_1$residuals, 
+                        lag=i, type="Ljung-Box", 
+                        fitdf = 1)$p.value
+}
+
+plot(White.LB, type = "h")
+```
+#normality of residuals ARIMA(0,1,1)
+```{r}
+shapiro.test(arima_0_1_1$residuals)
+```
+## forecast function
+```{r}
+my_forecast = function(model, holdout_data) {
+  arima = forecast::forecast(model, h = nrow(holdout_data))$mean
+  seasonal = forecast::forecast(decomp_stl$time.series[,1], h = nrow(holdout_data))$mean
+  fc = arima + seasonal
+  return(fc)
+}
+```
+
+##metrics function: MAE and MAPE 
+```{r}
+Metrics = function(forecast, test_data) {
+  error = test_data$mavg_mw - forecast
+  MAPE = mean(abs(error)/abs(test_data$mavg_mw))
+  MAE = mean(abs(error))
+
+  return (list(MAPE = MAPE, MAE = MAE))
+}
+```
+
+##ARIMA (0,1,1) forecast and metrics
+```{r}
+F_arima_0_1_1 = my_forecast(arima_0_1_1, energy_valid)
+Metrics(F_arima_0_1_1, energy_valid)
+```
+##Forecast Vs Actual on validation: ARIMA (0,1,1)
+```{r}
+ggplot() +
+  geom_line(aes(x = energy_valid$date, y = energy_valid$mavg_mw), color = "black") +
+  geom_line(aes(x = energy_valid$date, y = F_arima_0_1_1), color = "blue") +
+  xlab("Date") + ylab("Monthly Average Energy Usage (MW)") +
+  ggtitle("Monthly Average Energy Usage (MW) 2016-2023") + ylim(0, 6000)
+```
+##ARIMA (2,1,0) forecast and metrics
+```{r}
+F_arima_2_1_0 = my_forecast(arima_2_1_0, energy_valid)
+Metrics(F_arima_2_1_0, energy_valid)
+```
+##Forecast Vs Actual on validation: ARIMA (2,1,0)
+```{r}
+ggplot() +
+  geom_line(aes(x = energy_valid$date, y = energy_valid$mavg_mw), color = "black") +
+  geom_line(aes(x = energy_valid$date, y = F_arima_2_1_0), color = "red") +
+  xlab("Date") + ylab("Monthly Average Energy Usage (MW)") +
+  ggtitle("Monthly Average Energy Usage (MW) 2016-2023") + ylim(0, 6000)
+```
+##PLots: Forecast Vs Actual on validation: ARIMA (0,1,1) and ARIMA(2,1,0)
+```{r}
+ggplot() +
+  geom_line(aes(x = energy_df$date[1:84], y = energy_df$mavg_mw[1:84]), color = "black") +
+  geom_line(aes(x = energy_valid$date, y = F_arima_0_1_1), color = "blue") +
+  geom_line(aes(x = energy_valid$date, y = F_arima_2_1_0), color = "red") +
+  xlab("Date") + ylab("Monthly Average Energy Usage (MW)") +
+  ggtitle("Monthly Average Energy Usage (MW) 2016-2023") + ylim(0, 6000)
+```
+
+# Adding Validation data into training
+```{r}
+energy_df = energy %>%
+  mutate(date = mdy_hm(datetime_beginning_ept),
+         date = floor_date(date, unit = "month")) %>%
+  group_by(date) %>%
+  summarise(mavg_mw = mean(mw)) %>%
+  arrange(date)
+
+energy_train = energy_df %>%
+  filter(date <= ymd('2023-4-30'))
+
+energy_test = energy_df %>%
+  filter(date > ymd('2023-4-30'))
+```
+
+##STL decomposition on new train data
+```{r}
+mw = ts(energy_train$mavg_mw, start = 2016, frequency = 12)
+decomp_stl = stl(mw, s.window = 15)
+```
+
+##Seasonally adjusted on new train data
+```{r}
+mw_a = mw - decomp_stl$time.series[,1]
+autoplot(mw)
+autoplot(mw_a)
+autoplot(diff(mw_a, lag = 1))
+```
+##Fitting ARIMA(2,1,0) and ARIMA(0,1,1) on new train data
+```{r}
+arima_2_1_0 = Arima(mw_a, order = c(2,1,0))
+arima_0_1_1 = Arima(mw_a, order = c(0,1,1))
+```
+
+##forecast on test data ARIMA(0,1,1)
+```{r}
+F_arima_0_1_1 = my_forecast(arima_0_1_1, energy_test)
+Metrics(F_arima_0_1_1, energy_test)
+```
+##forecast on test data ARIMA(2,1,0)
+```{r}
+F_arima_2_1_0 = my_forecast(arima_2_1_0, energy_test)
+Metrics(F_arima_2_1_0, energy_test)
+```
+##forecast plot of ARIMA (0,1,1)
+```{r}
+ggplot() +
+  geom_line(aes(x = energy_test$date, y = energy_test$mavg_mw, color = "Actual Energy Usage"), size = 1) +
+  geom_line(aes(x = energy_test$date, y = F_arima_0_1_1, color = "Forecasted Energy Usage"), size = 1) +
+  xlab("Date") + ylab("Monthly Average Energy Usage (MW)") + ylim(0, 6000) +
+  scale_color_manual(values = c("Actual Energy Usage" = "black", "Forecasted Energy Usage" = "blue")) +
+  labs(color = "") 
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10, face = "plain"),  # Adjust the text size and remove bold
+        legend.title = element_text(size = 10),
+        legend.position = "right")  # Adjust legend position
+```
+
+##forecast plot of ARIMA(2,1,0)
+```{r}
+ggplot() +
+  geom_line(aes(x = energy_test$date, y = energy_test$mavg_mw, color = "Actual Energy Usage"), size = 1) +
+  geom_line(aes(x = energy_test$date, y = F_arima_2_1_0, color = "Forecasted Energy Usage"), size = 1) +
+  xlab("Date") + ylab("Monthly Average Energy Usage (MW)") + ylim(0, 6000) +
+  scale_color_manual(values = c("Actual Energy Usage" = "black", "Forecasted Energy Usage" = "red")) +
+  labs(color = "") 
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10, face = "plain"),  # Adjust the text size and remove bold
+        legend.title = element_text(size = 10),
+        legend.position = "right")  # Adjust legend position
+```
+
+##forecast plot of ARIMA (0,1,1) and ARIMA(2,1,0)
+```{r}
+ggplot() +
+  geom_line(aes(x = energy_df$date[1:88], y = energy_df$mavg_mw[1:88]), color = "black") +
+  geom_line(aes(x = energy_test$date, y = F_arima_0_1_1), color = "blue") +
+  geom_line(aes(x = energy_test$date, y = F_arima_2_1_0), color = "red") +
+  xlab("Date") + ylab("Monthly Average Energy Usage (MW)") +
+  ggtitle("Model2 - Monthly Average Energy Usage (MW) 2016-2023") + ylim(0, 6000) + theme(plot.title = element_text(hjust = 0.5))
+
+```
+

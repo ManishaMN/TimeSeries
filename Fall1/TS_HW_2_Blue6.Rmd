@@ -1,0 +1,179 @@
+---
+title: 'Time Series HW 2'
+authors: 'Blue 6 - Grant, Tae, Manisha, Andrew,Sam'
+output: html_document
+date: "2023-09-01"
+---
+## load libraries and data
+```{r}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+energy = read.csv("https://raw.githubusercontent.com/sjsimmo2/TimeSeries/master/AEP_hourly.csv", stringsAsFactors = TRUE)
+```
+
+## roll up the data to AVERAGE monthly energy usage
+```{r}
+energy_df = energy %>%
+  mutate(date = mdy_hm(datetime_beginning_ept),
+         date = floor_date(date, unit = "month")) %>%
+  group_by(date) %>%
+  summarise(mavg_mw = mean(mw)) %>%
+  arrange(date)
+```
+
+## split to train, validation and test data
+```{r}
+energy_train = energy_df %>%
+  filter(date < ymd('2023-1-1'))
+
+energy_valid = energy_df %>%
+  filter(date >= ymd('2023-1-1'),
+         date <= ymd('2023-4-30'))
+
+energy_test = energy_df %>%
+  filter(date > ymd('2023-4-30'))
+```
+
+## STL Decomposition
+```{r}
+mw = ts(energy_train$mavg_mw, start = 2016, frequency = 12)
+decomp_stl = stl(mw, s.window = 15)
+autoplot(decomp_stl)
+```
+
+## variables for decomposition and time series data
+```{r}
+decomp_df = data.frame(decomp_stl$time.series)
+
+dates = energy_train$date
+S_T_R = energy_train$mavg_mw
+S_ = decomp_df$seasonal
+T_ = decomp_df$trend
+```
+
+
+## Time series and decomposition plot
+```{r} 
+ggplot() +
+  geom_line(aes(x = dates, y = S_T_R, color = "Actual Energy Usage"), lwd = 0.8) +
+  geom_line(aes(x = dates, y = T_, color = "Trend Component"), lwd = 0.8) +
+  geom_line(aes(x = dates, y = S_, color = "Seasonal Component"), lwd = 0.8) +
+  xlab("Time") + ylab("Monthly Average Energy Usage (MW)") +
+  scale_color_manual(values = c("Actual Energy Usage" = "black", 
+                                "Trend Component" = "blue", 
+                                "Seasonal Component" = "red")) +
+  guides(color = guide_legend(title = "")) +
+  theme(plot.title = element_text(size = 12), 
+        axis.title.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 10), 
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10), 
+        legend.text = element_text(size = 10, face = "plain"),  # Adjust the text size and remove bold
+        legend.title = element_text(size = 10))
+
+```
+
+
+## function to forecast and to calculate MAE and MAPE
+```{r}
+ESM_Metrics = function(ESM_Model, test_data) {
+  test_forecast = forecast(ESM_Model, h = nrow(test_data))
+
+  error = test_data$mavg_mw - test_forecast$mean
+  MAPE = mean(abs(error)/abs(test_data$mavg_mw))
+  MAE = mean(abs(error))
+
+  return (list(MAPE = MAPE, MAE = MAE))
+}
+```
+
+## Simple ESM 
+```{r}
+simple_ESM = ses(mw, initial = 'simple')
+ESM_Metrics(simple_ESM, energy_valid)
+```
+## Holt Trend ESM
+```{r}
+trend_ESM = holt(mw, initial = 'optimal')
+ESM_Metrics(trend_ESM, energy_valid)
+```
+## Damped Holt Trend ESM
+```{r}
+trend_ESM_d = holt(mw, initial = 'optimal', damped = TRUE)
+ESM_Metrics(trend_ESM_d, energy_valid)
+```
+## Holt Winters Additive ESM
+```{r}
+seasonal_ESM_a = hw(mw, seasonal = "additive")
+ESM_Metrics(seasonal_ESM_a, energy_valid)
+```
+
+## ETS
+
+```{r}
+etsModel <- ets(mw)
+ESM_Metrics(etsModel, energy_valid)
+```
+
+## Holt Winters Additive ESM has the lowest MAPE (0.05734675) - Best Model
+
+
+## forecast plot on validation data for 'Holt Winters Additive ESM' 
+```{r}
+valid_forecast = forecast(seasonal_ESM_a, h = nrow(energy_valid))
+ggplot() +
+  geom_line(aes(x = energy_valid$date, y = energy_valid$mavg_mw, color = "Actual Energy Usage"), lwd = 0.8) +
+  geom_line(aes(x = energy_valid$date, y = valid_forecast$mean, color = "Forecasted Energy Usage"), lwd = 0.8) +
+  xlab("Time") + ylab("Monthly Average Energy Usage (MW)") +
+  guides(color = guide_legend(title = ""))+
+  scale_color_manual(values = c("black", "blue"))+
+  guides(color = guide_legend(title = "")) +
+  theme(plot.title = element_text(size = 12), 
+        axis.title.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 10), 
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10), 
+        legend.text = element_text(size = 10, face = "plain"),  # Adjust the text size and remove bold
+        legend.title = element_text(size = 10))
+```
+
+## including validation data in the training set
+```{r}
+energy_train = energy_df %>%
+  filter(date <= ymd('2023-4-30'))
+```
+
+
+## Holtwinter additive model on new training data 
+```{r}
+mw = ts(energy_train$mavg_mw, start = 2016, frequency = 12)
+
+seasonal_ESM_a = hw(mw, seasonal = "additive")
+```
+
+## forecasting updated 'Holtwinter additive model' on test data
+```{r}
+ESM_Metrics(seasonal_ESM_a, energy_test)
+test_forecast = forecast(seasonal_ESM_a, h = nrow(energy_test))
+```
+
+
+## forecast plot on training data for 'Holt Winters Additive ESM' 
+```{r}
+ggplot() +
+  geom_line(aes(x = energy_test$date, y = energy_test$mavg_mw, color = "Actual Energy Usage"), lwd = 0.8) +
+  geom_line(aes(x = energy_test$date, y = test_forecast$mean, color = "Forecasted Energy Usage"), lwd = 0.8) +
+  xlab("Time") + ylab("Monthly Average Energy Usage (MW)") +
+  guides(color = guide_legend(title = "")) +
+  scale_color_manual(values = c("black", "blue"))+
+  theme(plot.title = element_text(size = 12), 
+        axis.title.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 10), 
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10), 
+        legend.text = element_text(size = 10, face = "plain"),  # Adjust the text size and remove bold
+        legend.title = element_text(size = 10))
+```
+
+
