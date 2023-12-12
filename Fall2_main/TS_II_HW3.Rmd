@@ -1,0 +1,232 @@
+
+
+
+```{r}
+# Packages
+
+library(stringr)
+library(dplyr)
+library(tictoc)
+```
+
+
+
+```{r}
+
+# Reading in the data and formatting
+data <- read.csv("/Users/michaelkelly/Documents/Time Series Homework/Project/external_training_data.csv")
+
+data
+data$month <- as.factor(data$month)
+data$weekday <- as.factor(data$weekday)
+data$hour <- as.factor(data$hour)
+
+data$year <- as.numeric(str_split(  str_split(data$valid, " ")[[1]][1], "-" )[[1]][1])
+
+
+colSums(is.na(data))
+
+```
+
+
+
+
+
+
+```{r}
+
+
+# Creating the linear regression
+
+tic()
+full <- lm(mw ~ month + hour + weekday + virginia_temp_imputed + ohio_temp_imputed + mich_temp_imputed + virginia_temp_imputed_lag + ohio_temp_imputed_lag + mich_temp_imputed_lag + hour:temp_virginia + hour:temp_ohio + hour:temp_mich + hour:temp_virginia_lag + hour:temp_ohio_lag + hour:temp_mich_lag + hour:I(temp_virginia^2) + hour:I(temp_ohio^2) + hour:I(temp_mich^2) + hour:I(temp_virginia_lag^2) + hour:I(temp_ohio_lag^2) + hour:I(temp_mich_lag^2) + hour:I(temp_virginia^3) + hour:I(temp_ohio^3) + hour:I(temp_mich^3) + hour:I(temp_virginia_lag^3) + hour:I(temp_ohio_lag^3) + hour:I(temp_mich_lag^3) + temp_virginia + temp_ohio + temp_mich  + temp_virginia_lag + temp_ohio_lag + temp_mich_lag +  I(temp_virginia^2) + I(temp_ohio^2) + I(temp_mich^2) + I(temp_virginia_lag^2) + I(temp_ohio_lag^2) + I(temp_mich_lag^2) + I(temp_virginia^3) + I(temp_ohio^3) + I(temp_mich^3) + I(temp_virginia_lag^3) + I(temp_ohio_lag^3) + I(temp_mich_lag^3) + as.factor(month):temp_virginia + as.factor(month):temp_ohio + as.factor(month):temp_mich + as.factor(month):temp_virginia_lag + as.factor(month):temp_ohio_lag + as.factor(month):temp_mich_lag + as.factor(month):I(temp_virginia^2) + as.factor(month):I(temp_ohio^2) + as.factor(month):I(temp_mich^2) + as.factor(month):I(temp_virginia_lag^2) + as.factor(month):I(temp_ohio_lag^2) + as.factor(month):I(temp_mich_lag^2) + as.factor(month):I(temp_virginia^3) + as.factor(month):I(temp_ohio^3) + as.factor(month):I(temp_mich^3) + as.factor(month):I(temp_virginia_lag^3) + as.factor(month):I(temp_ohio_lag^3) + as.factor(month):I(temp_mich_lag^3), data = data )
+toc()
+
+full %>% summary()
+
+```
+
+Train and Test: This just to verify that the linear regression generalizes well. It does.
+```{r}
+set.seed(11)
+index <- sample(1:nrow(data))
+
+train <- data[index[1:floor(length(index)* 0.9)], ]
+
+test <- data[index[ceiling(length(index) * 0.9):length(index)], ]
+```
+
+
+
+Applying to train data
+
+```{r}
+
+
+# Training MSE: 27989.18
+# Training MAPE: 0.02978697
+train$y_hat <- predict(full, newdata = train)
+train$error <- train$mw - train$y_hat
+
+
+mean(train$error^2)
+mean(abs(train$error/train$mw))
+# Train MSE by month
+aggregate((train$error)^2 ~ train$month, FUN = mean)
+
+# Test MSE: 30821.04
+# Training MAPE: 0.03100528
+test$y_hat <- predict(full, newdata = test)
+test$error <- test$mw - test$y_hat
+# Test SMSE by month
+aggregate((test$error)^2 ~ test$month, FUN = mean)
+
+mean(test$error^2)
+mean(abs(test$error/test$mw))
+```
+
+
+```{r}
+
+# Creating y_hat and error columns. The error column will actually be used for modeling.
+
+data$y_hat <- predict(full, newdata = data)
+data$error <- data$mw - data$y_hat
+
+# Ordering the data and deleting any duplicate dates. Helps to handle daylight savings.
+data <- data[order(data$X),]
+data <- data[!duplicated(data$valid),]
+
+# Converting valid (which is the column name for date) to a character so we can rbind.
+data$valid <- as.character(data$valid)
+
+# There are six dates with no weather data available. So what we'll do is create a new row with the same date (valid), an X column for sorting, the ACTUAL MW load, and error will be the average of the linear model's errors for the hours before and after the missing data.
+data <- bind_rows(data, data.frame("X" = 597.5, mw = 4882.129, valid = "2021-01-25 23:00:00", error = mean(c(-150.0586510, -89.8664190)) ))
+data <- bind_rows(data, data.frame("X" = 5982.5, mw = 4368.022, valid = "2021-09-07 11:00:00", error = mean(c(106.15015, 143.70991)) ))
+data <- bind_rows(data, data.frame("X" = 10468.5, mw = mean(c(6050.414, 6030.919)), valid = "2022-03-13 02:00:00", error = mean(c(43.65590, 12.91936)) ))
+data <- bind_rows(data, data.frame("X" = 1727.5, mw = mean(c(3914.847, 3973.368)), valid = "2021-03-14 02:00:00", error = mean(c(207.9632, 210.7931)) ))
+data <- bind_rows(data, data.frame("X" = 19225.5, mw = mean(4525.99, 4538.237), valid = "2023-03-12 02:00:00", error = mean(c(15.628506, 8.155376)) ))
+data <- bind_rows(data, data.frame("X" = 1871.5, mw = 4416.238, valid = "2021-03-20 03:00:00", error = mean(c(-29.4918, 27.3371)) ))
+
+# Now we order the data by X so it's a coherent time series...
+data <- data[order(data$X),]
+
+# ...and delete rows with duplicate dates. This retains the rows we added above.
+data <- data[!duplicated(data$valid),]
+
+
+data %>% nrow()
+
+# Now this becomes your time series.
+data$error
+
+```
+
+## Here's the ARIMA model:
+
+
+
+
+
+# And now we fit an ARIMA model to the residuals.
+
+
+
+```{r}
+# Here's the time series data. Finally.
+ts5 <- ts(data$error, frequency = 24)
+
+```
+
+```{r}
+# Let's start with ARIMA.
+
+# Let's see if we have to difference:
+library(forecast)
+
+# No seasonal differencing:
+nsdiffs(ts5)
+
+# But we will have to take a conventional difference.
+ndiffs(ts5)
+
+
+```
+
+```{r}
+# Checking out the correlation plots.
+acf(ts5 %>% diff(), lag.max = 24*14 )
+pacf(ts5 %>% diff(), lag.max = 24*14 )
+
+# No ARIMA's going to fit this super well, but this order seems as reasonably as any other.
+arima5 <- Arima(ts5, order = c(2,1,0), seasonal = c(5,0,1), method = "CSS")
+
+# And now we generate our forecast
+delete5 <- forecast(arima5, h = 7*24) 
+
+# And here's MAPE.
+
+
+# Let's plot it.
+ggplot(forc_data5, aes(x = 1:nrow(forc_data5), y = mw)) + geom_line() + geom_line(aes(x = 1:nrow(forc_data5), y = delete5), color = "red" )
+```
+
+
+
+## And here's the Neural Network. This section uses Yang's GitHub.
+
+```{r}
+
+# Read in train and valid data
+train <- read.csv("https://raw.githubusercontent.com/yangrchen/fall-two-homework/main/Homework2_TS2/data/clean_train.csv")
+valid1 <- read.csv("https://raw.githubusercontent.com/yangrchen/fall-two-homework/main/Homework2_TS2/data/clean_valid.csv")
+valid2 <- read.csv("https://raw.githubusercontent.com/yangrchen/fall-two-homework/main/Homework2_TS2/data/clean_valid_2.csv")
+
+library(lubridate)
+
+# Subset data
+train <- train %>%
+  filter(year(train$datetime_beginning_ept) %in% c(2016, 2017, 2018, 2019, 2021, 2022, 2023))
+
+season_length <- 24
+train_ts <- ts(train$mw, frequency = season_length)
+valid1_ts <- ts(valid1$mw, frequency = season_length)
+valid2_ts <- ts(valid2$mw, frequency = season_length)
+
+
+# NN Model ----------------------------------------------------------------
+
+# Take a difference of 24 lags to make data stationary
+train_diff <- train_ts %>% diff(season_length)
+
+set.seed(47)
+
+# Fit a neural net model
+nn_model <- nnetar(train_diff, size = 10, repeats = 10,  p = 2, P = 3)
+
+# Forecast the next 168 hours using the neural net model
+nn_forecast <- forecast::forecast(nn_model, h = nrow(valid1))
+
+# Adjust the forecast values to be on the same scale as the original data based off the last season in the training data
+pass_forecast <- train_ts[(length(train_ts) - season_length + 1):length(train_ts)] + nn_forecast$mean[1:24]
+
+# Adjust the forecast values to be on the same scale as the original data
+for (i in 25:168) {
+  pass_forecast[i] <- pass_forecast[i - season_length] + nn_forecast$mean[i]
+}
+pass_forecast <- ts(pass_forecast, frequency = season_length)
+
+# Calculate the MAPE and MAE of the forecast values
+nn_error <- valid1_ts - pass_forecast
+nn_MAPE1 <- mean(abs(nn_error) / abs(valid1_ts)) * 100.0
+sprintf("MAPE: %f", nn_MAPE1)
+
+nn_error <- valid2_ts - pass_forecast
+nn_MAPE2 <- mean(abs(nn_error) / abs(valid2_ts)) * 100.0
+sprintf("MAPE: %f", nn_MAPE2)
+
+NN_Pred <- pass_forecast
+```
+
+
+
